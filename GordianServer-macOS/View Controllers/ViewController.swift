@@ -10,8 +10,10 @@ import Cocoa
 
 class ViewController: NSViewController, NSWindowDelegate {
     
+    @IBOutlet weak private var torRemoveAuthOutlet: NSButton!
+    @IBOutlet weak private var torAddAuthOutlet: NSButton!
+    @IBOutlet weak private var peerDetailsButton: NSButton!
     @IBOutlet weak private var startTorOutlet: NSButton!
-    @IBOutlet weak private var networkLabel: NSTextField!
     @IBOutlet weak private var mainnetIncomingImage: NSImageView!
     @IBOutlet weak private var bitcoinCoreWindow: NSView!
     @IBOutlet weak private var torWindow: NSView!
@@ -33,20 +35,22 @@ class ViewController: NSViewController, NSWindowDelegate {
     @IBOutlet weak private var mainnetOutgoingPeersLabel: NSTextField!
     @IBOutlet weak private var bitcoinIsOnHeaderImage: NSImageView!
     @IBOutlet weak private var networkButton: NSPopUpButton!
+    @IBOutlet weak private var bitcoinCoreLogOutlet: NSTextField!
+    
+    @IBOutlet weak var blocksOutlet: NSTextField!
+    @IBOutlet weak var hashrateOutlet: NSTextField!
+    @IBOutlet weak var pruningOutlet: NSTextField!
+    @IBOutlet weak var uptimeOutlet: NSTextField!
+    @IBOutlet weak var mempoolOutlet: NSTextField!
+    @IBOutlet weak var difficultyOutlet: NSTextField!
+    @IBOutlet weak var sizeOutlet: NSTextField!
+    
     
     weak var mgr = TorClient.sharedInstance
-    //var installingLightning = Bool()
     var timer: Timer?
-    //var httpPass = ""
     var chain = UserDefaults.standard.object(forKey: "chain") as? String ?? "main"
     var rpcpassword = ""
     var rpcuser = ""
-    var torHostname = ""
-    var mainHostname = ""
-    var testHostname = ""
-    var regHostname = ""
-    //var lightningP2pHostname = ""
-    //var lightningRpcHostname = ""
     var network = ""
     var rpcport = ""
     var newestVersion = ""
@@ -62,9 +66,8 @@ class ViewController: NSViewController, NSWindowDelegate {
     var torConfigured = false
     var bitcoinConfigured = false
     var ignoreExistingBitcoin = false
+    var isVerifying = false
     var regTestOn = false
-    //var lightningIsRunning = false
-    //var lightningInstalled = false
     var env = [String:String]()
     let d = Defaults()
     var infoMessage = ""
@@ -73,10 +76,13 @@ class ViewController: NSViewController, NSWindowDelegate {
     var updatingTor = false
     var installingXcode = false
     var currentVersion = ""
+    var peerInfo = ""
+    
 
     override func viewDidLoad() {
         super.viewDidLoad()
         isLoading = true
+        peerDetailsButton.alphaValue = 0
         NotificationCenter.default.addObserver(self, selector: #selector(refreshNow), name: .refresh, object: nil)
         
         d.setDefaults { [weak self] in
@@ -89,18 +95,44 @@ class ViewController: NSViewController, NSWindowDelegate {
 
     override func viewWillAppear() {
         self.view.window?.delegate = self
-        self.view.window?.minSize = NSSize(width: 544, height: 377)
+        self.view.window?.minSize = NSSize(width: 544, height: 568)
     }
 
     override func viewDidAppear() {
         var frame = self.view.window!.frame
-        let initialSize = NSSize(width: 544, height: 377)
+        let initialSize = NSSize(width: 544, height: 568)
         frame.size = initialSize
         self.view.window?.setFrame(frame, display: true)
         
         if isLoading {
             if mgr?.state != .started && mgr?.state != .connected  {
                 mgr?.start(delegate: self)
+            }
+            
+            if mgr?.state == .connected {
+                self.setTimer()
+                
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self else { return }
+                    
+                    self.torIsOn = true
+                    self.torVersionOutlet.stringValue = "v0.4.4.6"
+                    self.startTorOutlet.title = "Stop"
+                    self.startTorOutlet.isEnabled = true
+                    self.updateTorStatus(isOn: true)
+                    self.checkForGordian()
+                }
+                
+                guard let hostname = mgr?.rpcHostname() else {
+                    simpleAlert(message: "Tor config issue.", info: "There was an issue fetching your nodes hidden service address. Your node may not be remotely reachable.", buttonLabel: "OK")
+                    return
+                }
+                
+                self.torConfigured = true
+                
+                #if DEBUG
+                print("hostname: \(hostname)")
+                #endif
             }
         }
     }
@@ -111,13 +143,28 @@ class ViewController: NSViewController, NSWindowDelegate {
         alert.informativeText = "Closing this window does not automatically quit Tor or Bitcoin Core."
         alert.addButton(withTitle: "Quit")
         alert.addButton(withTitle: "Leave Running")
+        alert.addButton(withTitle: "Cancel")
         alert.alertStyle = .warning
         let modalResponse = alert.runModal()
         if (modalResponse == NSApplication.ModalResponse.alertFirstButtonReturn) {
             self.runScript(script: .stopBitcoin)
             self.mgr?.resign()
+            isLoading = true
+            return true
+        } else if modalResponse == NSApplication.ModalResponse.alertSecondButtonReturn {
+            isLoading = true
+            return true
+        } else {
+            return false
         }
-        return true
+    }
+    
+    @IBAction func peerDetailAction(_ sender: Any) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            
+            self.performSegue(withIdentifier: "showInfo", sender: self)
+        }
     }
     
     @IBAction func showSettingsAction(_ sender: Any) {
@@ -151,26 +198,38 @@ class ViewController: NSViewController, NSWindowDelegate {
     }
 
     private func checkForBitcoinUpdate() {
-        d.setDefaults { [unowned vc = self] in
-            vc.getLatestVersion { [unowned vc = self] (success, errorMessage) in
+        d.setDefaults { [weak self] in
+            guard let self = self else { return }
+            
+            self.isLoading = false
+            
+            self.getLatestVersion { [weak self] (success, errorMessage) in
+                guard let self = self else { return }
+                
                 if success {
-                    vc.setEnv()
+                    self.setEnv()
                     if self.currentVersion.contains(self.d.existingVersion()) {
-                        DispatchQueue.main.async { [unowned vc = self] in
-                            vc.updateOutlet.isEnabled = false
-                            vc.updateOutlet.title = "Update"
+                        DispatchQueue.main.async { [weak self] in
+                            guard let self = self else { return }
+                            
+                            self.updateOutlet.isEnabled = false
+                            self.updateOutlet.title = "Update"
                         }
                     } else {
-                        DispatchQueue.main.async { [unowned vc = self] in
-                            vc.updateOutlet.title = "Update"
-                            vc.updateOutlet.isEnabled = true
+                        DispatchQueue.main.async { [weak self] in
+                            guard let self = self else { return }
                             
-                            actionAlert(message: "A newer version of Bitcoin Core has been released. Upgrade to Bitcoin Core \(vc.newestVersion)?", info: "") { (response) in
+                            self.updateOutlet.title = "Update"
+                            self.updateOutlet.isEnabled = true
+                            
+                            actionAlert(message: "A newer version of Bitcoin Core has been released. Upgrade to Bitcoin Core \(self.newestVersion)?", info: "") { (response) in
                                 if response {
-                                    DispatchQueue.main.async { [unowned vc = self] in
-                                        vc.upgrading = true
-                                        vc.timer?.invalidate()
-                                        vc.performSegue(withIdentifier: "goInstall", sender: vc)
+                                    DispatchQueue.main.async { [weak self] in
+                                        guard let self = self else { return }
+                                        
+                                        self.upgrading = true
+                                        self.timer?.invalidate()
+                                        self.performSegue(withIdentifier: "goInstall", sender: self)
                                     }
                                 }
                             }
@@ -178,7 +237,7 @@ class ViewController: NSViewController, NSWindowDelegate {
                     }
                 } else {
                     simpleAlert(message: "Network request error", info: errorMessage ?? "We had an issue getting a response from the Bitcoin Core repo on GitHub, we do this to check for new releases, you can ignore this error but we thought you should know something is up, please check your internet connection.", buttonLabel: "OK")
-                    vc.setEnv()
+                    self.setEnv()
                 }
             }
         }
@@ -190,94 +249,36 @@ class ViewController: NSViewController, NSWindowDelegate {
         UserDefaults.standard.setValue("main", forKey: "chain")
         chain = "main"
         setEnv()
-        refreshAction()
+        resetOutlets()
+        checkSystem()
     }
     
     @IBAction func userSelectedTestnet(_ sender: Any) {
         UserDefaults.standard.setValue("test", forKey: "chain")
         chain = "test"
         setEnv()
-        refreshAction()
+        resetOutlets()
+        checkSystem()
     }
     
     @IBAction func userSelectedRegtest(_ sender: Any) {
         UserDefaults.standard.setValue("regtest", forKey: "chain")
         chain = "regtest"
         setEnv()
-        refreshAction()
+        resetOutlets()
+        checkSystem()
     }
     
     @IBAction func userSelectedSignet(_ sender: Any) {
         UserDefaults.standard.setValue("signet", forKey: "chain")
         chain = "signet"
         setEnv()
-        refreshAction()
-    }
-    
-    @IBAction func showLightningQuickConnect(_ sender: Any) {
-//        DispatchQueue.main.async { [unowned vc = self] in
-//            vc.rpcport = "1312"
-//            vc.network = "lightning"
-//            vc.torHostname = vc.lightningRpcHostname
-//            vc.performSegue(withIdentifier: "showPairingCode", sender: vc)
-//        }
-    }
-
-    @IBAction func installLightningAction(_ sender: Any) {
-//        if !lightningInstalled {
-//            actionAlert(message: "This is reckless!", info: "This will install c-lightning from source, a lot of things can go wrong when installing from source but generally it should work just fine. Click yes to install.") { [weak self]  response in
-//                guard let self = self else { return }
-//                if response {
-//                    DispatchQueue.main.async { [weak self] in
-//                        self?.installLightningOutlet.isEnabled = false
-//                    }
-//                    self.installingLightning = true
-//                    self.standingUp = false
-//                    self.upgrading = false
-//                    self.strapping = false
-//                    self.runScript(script: .getLightningHostnames)
-//                }
-//            }
-//        } else {
-//            if lightningIsRunning {
-//                DispatchQueue.main.async { [weak self] in
-//                    self?.startSpinner(description: "stopping lightning...")
-//                }
-//                self.runScript(script: .stopLightning)
-//
-//            } else {
-//                DispatchQueue.main.async { [weak self] in
-//                    self?.startSpinner(description: "checking Bitcoin Core sync status...")
-//                }
-//
-//                MakeRpcCall.shared.command(method: "getblockchaininfo", port: "8332", user: rpcuser, password: rpcpassword) { [weak self] result in
-//                    guard let self = self else { return }
-//
-//                    guard let result = result as? NSDictionary, let verificationprogress = result["verificationprogress"] as? Double else {
-//                        self.hideSpinner()
-//                        self.showAlertMessage(message: "Ooops", info: "We did not get a valid response from Bitcoin Core, ensure mainnet is running and fully synced then try again")
-//                        return
-//                    }
-//
-//                    guard verificationprogress > 0.9999 else {
-//                        self.hideSpinner()
-//                        self.showAlertMessage(message: "Bitcoin Core not fully synced", info: "In order to use lightning your node needs to be fully synced")
-//                        return
-//                    }
-//
-//                    DispatchQueue.main.async { [weak self] in
-//                        guard let self = self else { return }
-//
-//                        self.taskDescription.stringValue = "starting lightning..."
-//                        self.runScript(script: .startLightning)
-//                    }
-//                }
-//            }
-//        }
+        resetOutlets()
+        checkSystem()
     }
 
     @IBAction func refreshAction(_ sender: Any) {
-        refreshAction()
+        checkSystem()
     }
     
     private func addSpinnerDesc(_ description: String) {
@@ -291,7 +292,7 @@ class ViewController: NSViewController, NSWindowDelegate {
         }
     }
     
-    private func refreshAction() {
+    private func checkSystem() {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             
@@ -328,8 +329,10 @@ class ViewController: NSViewController, NSWindowDelegate {
     }
 
     private func addAuth() {
-        DispatchQueue.main.async { [unowned vc = self] in
-            vc.performSegue(withIdentifier: "addAuth", sender: vc)
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            
+            self.performSegue(withIdentifier: "addAuth", sender: self)
         }
     }
 
@@ -385,10 +388,12 @@ class ViewController: NSViewController, NSWindowDelegate {
                         let version = dict!["version"] as! String
                         actionAlert(message: "Upgrade to Bitcoin Core \(version)?", info: "") { (response) in
                             if response {
-                                DispatchQueue.main.async { [unowned vc = self] in
-                                    vc.upgrading = true
-                                    vc.timer?.invalidate()
-                                    vc.performSegue(withIdentifier: "goInstall", sender: vc)
+                                DispatchQueue.main.async { [weak self] in
+                                    guard let self = self else { return }
+                                    
+                                    self.upgrading = true
+                                    self.timer?.invalidate()
+                                    self.performSegue(withIdentifier: "goInstall", sender: self)
                                 }
                             }
                         }
@@ -401,26 +406,39 @@ class ViewController: NSViewController, NSWindowDelegate {
     //MARK: User Action Installers, Starters and Configurators
 
     @IBAction func verifyAction(_ sender: Any) {
-        runScript(script: .verifyBitcoin)
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            
+            self.isVerifying = true
+            self.performSegue(withIdentifier: "goInstall", sender: self)
+        }
     }
 
     private func installNow() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            
+            self.timer?.invalidate()
+            self.timer = nil
+        }
+        
         startSpinner(description: "Fetching latest Bitcoin Core version...")
-        FetchLatestRelease.get { [unowned vc = self] (dict, error) in
-
+        FetchLatestRelease.get { [weak self] (dict, error) in
+            guard let self = self else { return }
+            
             if error != nil {
-                vc.hideSpinner()
+                self.hideSpinner()
                 simpleAlert(message: "Error", info: error ?? "We had an error fetching the latest version of Bitcoin Core, please check your internet connection and try again", buttonLabel: "OK")
 
             } else {
-                vc.hideSpinner()
+                self.hideSpinner()
                 let version = dict!["version"] as! String
 
                 // Installing from scratch, however user may have gone into settings and changed some things so we need to check for that.
                 func standup() {
-                    let pruned = vc.d.prune()
-                    let txindex = vc.d.txindex()
-                    let directory = vc.d.dataDir()
+                    let pruned = self.d.prune()
+                    let txindex = self.d.txindex()
+                    let directory = self.d.dataDir()
                     let pruneInGb = Double(pruned) / 954.0
                     let rounded = Double(round(100 * pruneInGb) / 100)
 
@@ -431,7 +449,7 @@ class ViewController: NSViewController, NSWindowDelegate {
 
                     If your node is already running you will need to restart it for the new settings to take effect.
 
-                    Gordian Server will create the following directory: /Users/\(NSUserName())/.gordian
+                    Gordian Server will create the following directory: /Users/\(NSUserName())/.gordian/BitcoinCore
 
                     It will create or add missing rpc credentials to the bitcoin.conf in \(directory).
                     """
@@ -444,7 +462,7 @@ class ViewController: NSViewController, NSWindowDelegate {
 
                         You can always edit settings via File > Settings.
 
-                        GordianServer will create the following directory: /Users/\(NSUserName())/.gordian
+                        GordianServer will create the following directory: /Users/\(NSUserName())/.gordian/BitcoinCore
 
                         It will create or add missing rpc credentials to the bitcoin.conf in \(directory).
                         """
@@ -456,7 +474,7 @@ class ViewController: NSViewController, NSWindowDelegate {
 
                         You can always edit settings via File > Settings.
 
-                        Gordian Server will create the following directory: /Users/\(NSUserName())/.gordian
+                        Gordian Server will create the following directory: /Users/\(NSUserName())/.gordian/BitcoinCore
 
                         It will create or add missing rpc credentials to the bitcoin.conf in \(directory).
                         """
@@ -464,6 +482,7 @@ class ViewController: NSViewController, NSWindowDelegate {
                     
                     self.headerText = "Install Bitcoin Core v\(version)?"
                     self.ignoreExistingBitcoin = false
+                    
                     DispatchQueue.main.async { [weak self] in
                         guard let self = self else { return }
                         
@@ -472,7 +491,7 @@ class ViewController: NSViewController, NSWindowDelegate {
                 }
 
                 // Bitcoind and possibly tor are already installed
-                if vc.bitcoinInstalled {
+                if self.bitcoinInstalled {
 
                     self.headerText = "Install Bitcoin Core v\(version)?"
 
@@ -494,6 +513,13 @@ class ViewController: NSViewController, NSWindowDelegate {
             }
         }
     }
+    
+    @IBAction func torAuthHelpAction(_ sender: Any) {
+        DispatchQueue.main.async {
+            guard let url = URL(string: "https://community.torproject.org/onion-services/advanced/client-auth/") else { return }
+            NSWorkspace.shared.open(url)
+        }
+    }
 
     @IBAction func standUp(_ sender: Any) {
         installNow()
@@ -501,16 +527,20 @@ class ViewController: NSViewController, NSWindowDelegate {
     
     @IBAction func startTorAction(_ sender: Any) {
         if !torIsOn {
-            DispatchQueue.main.async { [unowned vc = self] in
-                vc.startSpinner(description: "starting tor...")
-                vc.startTorOutlet.isEnabled = false
-                vc.mgr?.start(delegate: self)
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                
+                self.startSpinner(description: "starting tor...")
+                self.startTorOutlet.isEnabled = false
+                self.mgr?.start(delegate: self)
             }
         } else {
-            DispatchQueue.main.async { [unowned vc = self] in
-                vc.startTorOutlet.isEnabled = false
-                vc.mgr?.resign()
-                vc.updateTorStatus(isOn: false)
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                
+                self.startTorOutlet.isEnabled = false
+                self.mgr?.resign()
+                self.updateTorStatus(isOn: false)
             }
         }
     }
@@ -518,9 +548,11 @@ class ViewController: NSViewController, NSWindowDelegate {
     // MARK: Script Methods
 
     func checkForXcodeSelect() {
-        DispatchQueue.main.async { [unowned vc = self] in
-            vc.taskDescription.stringValue = "checking for xcode select..."
-            vc.runScript(script: .checkXcodeSelect)
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            
+            self.taskDescription.stringValue = "checking for xcode select..."
+            self.runScript(script: .checkXcodeSelect)
         }
     }
 
@@ -531,54 +563,104 @@ class ViewController: NSViewController, NSWindowDelegate {
             self.taskDescription.stringValue = "checking if bitcoin core is running..."
         }
         
-        runScript(script: .isBitcoinOn)
+        command(command: "getblockchaininfo") { [weak self] response in
+            guard let self = self else { return }
+            
+            self.showBitcoinLog()
+            
+            guard let response = response as? [String:Any] else {
+                return
+            }
+            
+            self.setTimer()
+            
+            self.bitcoinRunning = true
+            
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                
+                let blockchainInfo = BlockchainInfo(response)
+                self.blocksOutlet.stringValue = "\(blockchainInfo.blocks)"
+                self.difficultyOutlet.stringValue = "\(blockchainInfo.difficulty.diffString)"
+                self.pruningOutlet.stringValue = "\(blockchainInfo.pruned)"
+                self.sizeOutlet.stringValue = "\(blockchainInfo.size_on_disk.size)"
+                
+                self.mainnetSyncedLabel.stringValue = blockchainInfo.verificationprogress.bitcoinCoreSyncStatus
+                self.bitcoinIsOnHeaderImage.image = NSImage(imageLiteralResourceName: "NSStatusAvailable")
+                self.startMainnetOutlet.title = "Stop"
+                self.startMainnetOutlet.isEnabled = true
+                self.getPeerInfo()
+            }
+        }
     }
 
     func checkBitcoindVersion() {
-        DispatchQueue.main.async { [unowned vc = self] in
-            vc.taskDescription.stringValue = "checking if bitcoin core is installed..."
-            vc.runScript(script: .checkForBitcoin)
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            
+            self.taskDescription.stringValue = "checking if bitcoin core is installed..."
+            self.runScript(script: .checkForBitcoin)
         }
     }
 
     func checkBitcoinConfForRPCCredentials() {
-        DispatchQueue.main.async { [unowned vc = self] in
-            vc.taskDescription.stringValue = "getting rpc credentials..."
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            
+            self.taskDescription.stringValue = "getting rpc credentials..."
             
             let path = URL(fileURLWithPath: "/Users/\(NSUserName())/Library/Application Support/Bitcoin/bitcoin.conf")
             
             guard let conf = try? String(contentsOf: path, encoding: .utf8) else {
-                print("can not get bitcoin.conf")
+                actionAlert(message: "Missing bitcoin.conf file.",
+                            info: "You need a bitcoin.conf file for Gordian Server to function. Would you like to add the default bitcoin.conf?") { [weak self] response in
+                    guard let self = self else { return }
+                    
+                    if response {
+                        self.setDefaultBitcoinConf()
+                    }
+                }
                 return
             }
-            
             self.checkForRPCCredentials(response: conf)
+        }
+    }
+    
+    
+    
+    private func setDefaultBitcoinConf() {
+        //no existing settings - use default
+        
+        //Create the directory first
+        let bitcoinPath = URL(fileURLWithPath: "/Users/\(NSUserName())/Library/Application Support/Bitcoin", isDirectory: true).path
+        
+        do {
+            try FileManager.default.createDirectory(atPath: bitcoinPath,
+                                                    withIntermediateDirectories: true,
+                                                    attributes: [FileAttributeKey.posixPermissions: 0o700])
+        } catch {
+            print("Bitcoin directory previously created.")
+        }
+        
+        
+        let bitcoinConfUrl = URL(fileURLWithPath: "/Users/\(NSUserName())/Library/Application Support/Bitcoin/bitcoin.conf")
+        
+        guard let bitcoinConf = BitcoinConf.bitcoinConf().data(using: .utf8) else { return }
+        
+        do {
+            try bitcoinConf.write(to: bitcoinConfUrl)
+            simpleAlert(message: "bitcoin.conf created ✓", info: "", buttonLabel: "OK")
+        } catch {
+            simpleAlert(message: "There was an issue...", info: "Unable to create the bitcoin.conf, please let us know about this bug.", buttonLabel: "OK")
         }
     }
 
     func checkForGordian() {
-        DispatchQueue.main.async { [unowned vc = self] in
-            vc.taskDescription.stringValue = "checking for ~/.gordian directory..."
-            vc.runScript(script: .checkStandUp)
-        }
-    }
-    
-    private func isLightningRunning() {
         DispatchQueue.main.async { [weak self] in
-            self?.taskDescription.stringValue = "checking if lightning is running..."
-            self?.runScript(script: .isLightningRunning)
-        }
-    }
-    
-    private func getLightningHttpPass() {
-        DispatchQueue.main.async { [weak self] in
-            self?.runScript(script: .getLightningRpcCreds)
-        }
-    }
-    
-    private func getLightningRpcHost() {
-        DispatchQueue.main.async { [weak self] in
-            self?.runScript(script: .getLightningHostnames)
+            guard let self = self else { return }
+            
+            self.taskDescription.stringValue = "checking for ~/.gordian/BitcoinCore directory..."
+            self.runScript(script: .checkStandUp)
         }
     }
 
@@ -614,8 +696,13 @@ class ViewController: NSViewController, NSWindowDelegate {
             if let errorOutput = String(data: errData, encoding: .utf8) {
                 #if DEBUG
                 print("error: \(errorOutput)")
-                if errorOutput != "" && !errorOutput.contains("not connect to the server") && !errorOutput.contains("block") && !errorOutput.contains("Loading P2P addresses")  {
-                    simpleAlert(message: "Error", info: errorOutput, buttonLabel: "OK")
+                if errorOutput != "" && !errorOutput.contains("Pruning blockstore") && !errorOutput.contains("not connect to the server") && !errorOutput.contains("block") && !errorOutput.contains("Loading P2P addresses")  {
+                    if errorOutput.contains("Cannot obtain a lock on data directory") {
+                        simpleAlert(message: "Shutdown in progress...", info: "Please be patient while Bitcoin Core shuts down, you will see \"Shutdown: done\" in the log output below when it has completely stopped.", buttonLabel: "OK")
+                    } else {
+                        simpleAlert(message: "Error", info: errorOutput, buttonLabel: "OK")
+                    }
+                    
                 }
                 
                 #endif
@@ -623,6 +710,39 @@ class ViewController: NSViewController, NSWindowDelegate {
             }
             
             self?.parseScriptResult(script: script, result: result)
+        }
+    }
+    
+    private func showBitcoinLog() {
+        let chain = UserDefaults.standard.string(forKey: "chain") ?? "main"
+        var path:URL?
+        
+        switch chain {
+        case "main":
+            path = URL(fileURLWithPath: "/Users/\(NSUserName())/Library/Application Support/Bitcoin/debug.log")
+        case "test":
+            path = URL(fileURLWithPath: "/Users/\(NSUserName())/Library/Application Support/Bitcoin/testnet3/debug.log")
+        case "regtest":
+            path = URL(fileURLWithPath: "/Users/\(NSUserName())/Library/Application Support/Bitcoin/regtest/debug.log")
+        case "signet":
+            path = URL(fileURLWithPath: "/Users/\(NSUserName())/Library/Application Support/Bitcoin/signet/debug.log")
+        default:
+            break
+        }
+        
+        guard let path = path, let log = try? String(contentsOf: path, encoding: .utf8) else {
+            print("can not get \(chain) debug.log")
+            return
+        }
+        
+        let logItems = log.components(separatedBy: "\n")
+        
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            
+            if logItems.count > 2 {
+                self.bitcoinCoreLogOutlet.stringValue = "\(logItems[logItems.count - 2])"
+            }
         }
     }
 
@@ -634,200 +754,25 @@ class ViewController: NSViewController, NSWindowDelegate {
             checkStandUpParser(result: result)
             
         case .stopBitcoin:
+            showBitcoinLog()
             stopBitcoinParse(result: result)
             
         case .startBitcoin:
+            showBitcoinLog()
             startBitcoinParse(result: result)
-
-        case .isBitcoinOn:
-            parseIsBitcoinOn(result: result)
 
         case .checkForBitcoin:
             parseBitcoindResponse(result: result)
 
-        case .verifyBitcoin:
-            parseVerifyResult(result: result)
-
         case .checkXcodeSelect:
             parseXcodeSelectResult(result: result)
-            
-//        case .getLightningHostnames:
-//            parseLightningHostnames(result: result)
-//
-//        case .isLightningInstalled:
-//            parseLightningInstalledResponse(result: result)
-//
-//        case .isLightningRunning:
-//            parseIsLightningRunningResponse(result: result)
-//
-//        case .startLightning:
-//            startLightningParse(result: result)
-//
-//        case .stopLightning:
-//            stopLightningParse(result: result)
-//
-//        case .getLightningRpcCreds:
-//            parseLightningConfig(result: result)
 
-        default: break
+        default:
+            break
         }
     }
-    
-//    private func parseTorUpdateAvailable(result: String) {
-//        if result.contains("Tor") || result.contains("tor") {
-//            DispatchQueue.main.async { [weak self] in
-//                guard let self = self else { return }
-//
-//                self.updateTorOutlet.isEnabled = true
-//            }
-//        } else {
-//            DispatchQueue.main.async { [weak self] in
-//                guard let self = self else { return }
-//
-//                self.updateTorOutlet.isEnabled = false
-//            }
-//        }
-//    }
-    
-//    private func parseLightningConfig(result: String) {
-//        let arr = result.split(separator: "\n")
-//        for item in arr {
-//            if item.contains("http-pass") {
-//                let arr1 = item.split(separator: "=")
-//                httpPass = "\(arr1[1])"
-//                getLightningRpcHost()
-//            }
-//        }
-//    }
-//
-//    private func parseLightningHostnames(result: String) {
-//        let arr = result.split(separator: "\n")
-//        if arr.count > 0 {
-//            DispatchQueue.main.async { [weak self] in
-//                self?.lightningP2pHostname = "\(arr[0])"
-//                self?.lightningRpcHostname = "\(arr[1])"
-//                if self!.installingLightning {
-//                    self?.performSegue(withIdentifier: "goInstall", sender: self)
-//                } else {
-//                    DispatchQueue.main.async { [weak self] in
-//                        self?.lightningQuickConnectOutlet.isEnabled = true
-//                    }
-//                }
-//            }
-//        }
-//    }
-    
-//    private func stopLightningParse(result: String) {
-//        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [unowned vc = self] in
-//            vc.runScript(script: .isLightningRunning)
-//            vc.hideSpinner()
-//        }
-//    }
-//
-//    private func startLightningParse(result: String) {
-//        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [unowned vc = self] in
-//            vc.runScript(script: .isLightningRunning)
-//            vc.hideSpinner()
-//        }
-//    }
-    
-//    private func parseIsLightningRunningResponse(result: String) {
-//        if result.contains("No such file or directory") {
-//            DispatchQueue.main.async { [weak self] in
-//                self?.lightningStatusIcon.image = NSImage(imageLiteralResourceName: "NSStatusUnavailable")
-//                self?.installLightningOutlet.title = "Start"
-//                self?.lightningIsRunning = false
-//                self?.lightningQuickConnectOutlet.isEnabled = false
-//            }
-//
-//        } else if let dict = convertStringToDictionary(json: result) {
-//            let version = dict["version"] as? String ?? ""
-//            DispatchQueue.main.async { [weak self] in
-//                self?.lightningVersionLabel.stringValue = version
-//                self?.lightningStatusIcon.image = NSImage(imageLiteralResourceName: "NSStatusAvailable")
-//                self?.installLightningOutlet.title = "Stop"
-//                self?.lightningIsRunning = true
-//                self?.getLightningHttpPass()
-//            }
-//        } else if result.contains("error") {
-//            DispatchQueue.main.async { [weak self] in
-//                self?.lightningStatusIcon.image = NSImage(imageLiteralResourceName: "NSStatusUnavailable")
-//                self?.installLightningOutlet.title = "Start"
-//                self?.lightningIsRunning = false
-//                self?.lightningQuickConnectOutlet.isEnabled = false
-//            }
-//
-//            showAlertMessage(message: "Error", info: result)
-//
-//        } else {
-//            DispatchQueue.main.async { [weak self] in
-//                self?.lightningStatusIcon.image = NSImage(imageLiteralResourceName: "NSStatusUnavailable")
-//                self?.installLightningOutlet.title = "Start"
-//                self?.lightningIsRunning = false
-//                self?.lightningQuickConnectOutlet.isEnabled = false
-//            }
-//        }
-//    }
-    
-//    private func parseLightningInstalledResponse(result: String) {
-//        if result.contains("lightning installed") {
-//            lightningInstalled = true
-//            isLightningRunning()
-//            if bitcoinInstalled && bitcoinRunning {
-//                DispatchQueue.main.async { [weak self] in
-//                    guard let self = self else { return }
-//                    self.installLightningOutlet.isEnabled = true
-//                    self.lightningWindow.alphaValue = 1
-//                }
-//            } else {
-//                DispatchQueue.main.async { [weak self] in
-//                    guard let self = self else { return }
-//                    self.installLightningOutlet.isEnabled = false
-//                    self.lightningWindow.alphaValue = 0.5
-//                }
-//            }
-//        } else {
-//            if bitcoinInstalled {
-//                if bitcoinRunning && torIsOn {
-//                    DispatchQueue.main.async { [weak self] in
-//                        guard let self = self else { return }
-//                        self.lightningWindow.alphaValue = 1
-//                        self.installLightningOutlet.isEnabled = true
-//                    }
-//                } else {
-//                    DispatchQueue.main.async { [weak self] in
-//                        guard let self = self else { return }
-//                        self.lightningWindow.alphaValue = 0.5
-//                    }
-//                }
-//            }
-//        }
-//    }
 
-//    private func parseOldHostResponse(result: String) {
-//        if result.contains("Exists") {
-//            actionAlert(message: "You have an outdated version of GordianServer", info: "You need to run through the installation script again to configure your new Tor hidden services and to be able to run more then one network at a time, GordianServer may not function properly otherwise.") { [unowned vc = self] response in
-//                if response {
-//                    vc.runScript(script: .removeOldHost)
-//                    vc.installNow()
-//                }
-//            }
-//        } else {
-//            checkForAuth()
-//        }
-//    }
-
-    private func parseAuthCheck(result: String) {
-        if result.contains("Unauthenticated") && torConfigured && bitcoinConfigured {
-            let ud = UserDefaults.standard
-            if ud.object(forKey: "doNotAskForAuthAgain") == nil {
-               //addAuth()
-            }
-        }
-        //runScript(script: .isLightningInstalled)
-    }
-
-    private func bitcoinIsOff() {
+     private func bitcoinIsOff() {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             
@@ -835,9 +780,7 @@ class ViewController: NSViewController, NSWindowDelegate {
             self.bitcoinRunning = false
             self.startMainnetOutlet.title = "Start"
             self.startMainnetOutlet.isEnabled = true
-            self.mainnetSyncedLabel.stringValue = ""
-            self.mainnetIncomingPeersLabel.stringValue = ""
-            self.mainnetOutgoingPeersLabel.stringValue = ""
+            self.resetOutlets()
         }
     }
 
@@ -856,8 +799,10 @@ class ViewController: NSViewController, NSWindowDelegate {
     }
 
     private func startBitcoinParse(result: String) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [unowned vc = self] in
-            vc.runScript(script: .isBitcoinOn)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
+            guard let self = self else { return }
+            
+            self.isBitcoinOn()
         }
     }
 
@@ -881,59 +826,9 @@ class ViewController: NSViewController, NSWindowDelegate {
         if result.contains("False") {
             checkForXcodeSelect()
         } else {
-            checkBitcoindVersion()
+            // first check if Bitocin Directory exists
+            checkBitcoinConfForRPCCredentials()
         }
-    }
-
-    private func convertStringToDictionary(json: String) -> [String: AnyObject]? {
-        if let data = json.data(using: .utf8) {
-            do {
-                let json = try JSONSerialization.jsonObject(with: data, options: [.mutableLeaves, .allowFragments]) as? [String: AnyObject]
-                return json
-            } catch {
-                return nil
-            }
-        }
-        return nil
-    }
-
-    private func progress(dict: [String:AnyObject]) -> String {
-        if let verificationprogress = dict["verificationprogress"] as? Double {
-            return verificationprogress.bitcoinCoreSyncStatus
-        } else {
-            return ""
-        }
-    }
-
-    private func parseIsBitcoinOn(result: String) {
-        if result.contains("Could not connect to the server") {
-            self.bitcoinIsOff()
-            self.hideSpinner()
-            
-        } else if result.contains("chain") {
-            self.bitcoinRunning = true
-            
-            if let dict = convertStringToDictionary(json: result) {
-                DispatchQueue.main.async { [weak self] in
-                    guard let self = self else { return }
-                    
-                    self.mainnetSyncedLabel.stringValue = self.progress(dict: dict)
-                    self.checkBitcoinConfForRPCCredentials()
-                    self.bitcoinIsOnHeaderImage.image = NSImage(imageLiteralResourceName: "NSStatusAvailable")
-                    self.startMainnetOutlet.title = "Stop"
-                    self.startMainnetOutlet.isEnabled = true
-                    self.setTimer()
-                }
-            } else {
-                simpleAlert(message: "There was an issue...", info: "We had a problem parsing the response from Bitcoin Core. Please let us know about this.", buttonLabel: "OK")
-            }
-        } else {
-            self.bitcoinRunning = true
-            self.setTimer()
-            simpleAlert(message: "Bitcoin Core Message", info: result + "\n\nGordian Server will auto refresh every 15 seconds. Please be patient while Bitcoin Core starts as it can take time. If the app feels stuck just tap the refresh button located under the logo. You can always monitor the log to see details of what is happening in real time by clicking \"Go To\" > \"Bitcoin Core Log\".", buttonLabel: "OK")
-        }
-        
-        checkForBitcoinUpdate()
     }
 
     private func command(command: String, completion: @escaping ((Any?)) -> Void) {
@@ -951,16 +846,44 @@ class ViewController: NSViewController, NSWindowDelegate {
         default:
             break
         }
-        rpc.command(method: command, port: port, user: UserDefaults.standard.string(forKey: "rpcuser")!, password: UserDefaults.standard.string(forKey: "rpcpassword")!) { (response, error) in
+        rpc.command(method: command, port: port, user: rpcuser, password: rpcpassword) { [weak self] (response, error) in
+            guard let self = self else { return }
+            
             if error == nil {
                 completion((response))
-            } else {
-                if error!.contains("Loading block index") {
-                    simpleAlert(message: "Loading blocks...", info: "Your node is just getting started, Gordian Server will auto refresh every 15 seconds. Please be patient while your node loads its blocks.", buttonLabel: "OK")
-                } else if error!.contains("Verifying blocks") {
-                    simpleAlert(message: "Verifying blocks...", info: "Your node is just getting started, Gordian Server will auto refresh every 15 seconds. Please be patient while your node verifies its blocks.", buttonLabel: "OK")
-                } else if !error!.contains("Could not connect to the server") {
-                    simpleAlert(message: "There was an issue.", info: error!, buttonLabel: "OK")
+                
+            } else if let error = error {
+                
+                switch error {
+                case _ where error.contains("Loading block index"),
+                     _ where error.contains("Verifying blocks"),
+                     _ where error.contains("Loading P2P addresses…"),
+                     _ where error.contains("Pruning"),
+                     _ where error.contains("Rewinding"),
+                     _ where error.contains("Rescanning"):
+                    
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self = self else { return }
+                        
+                        self.mainnetSyncedLabel.stringValue = "Loading..."
+                        self.bitcoinIsOnHeaderImage.image = NSImage(imageLiteralResourceName: "NSStatusAvailable")
+                        self.startMainnetOutlet.title = "Stop"
+                        self.startMainnetOutlet.isEnabled = false
+                    }
+                    
+                case _ where error.contains("Could not connect to the server"):
+                    self.bitcoinIsOff()
+                    self.showBitcoinLog()
+                    
+                    if self.d.autoStart() && self.isLoading {
+                        self.addSpinnerDesc("starting \(self.chain)...")
+                        self.runScript(script: .startBitcoin)
+                    } else {
+                        self.hideSpinner()
+                    }
+                    
+                default:
+                    simpleAlert(message: "Bitcoin Core Message", info: error + "\n\nGordian Server will auto refresh every 5 seconds. Please be patient while Bitcoin Core starts as it can take time. If the app feels stuck just tap the refresh button located under the logo. You can always monitor the log to see details of what is happening in real time by clicking \"Go To\" > \"Bitcoin Core Log\".", buttonLabel: "OK")
                 }
             }
         }
@@ -969,18 +892,22 @@ class ViewController: NSViewController, NSWindowDelegate {
     func updateTorStatus(isOn: Bool) {
         torIsOn = isOn
         if isOn {
-            DispatchQueue.main.async { [unowned vc = self] in
-                vc.torRunningImage.alphaValue = 1
-                vc.torRunningImage.image = NSImage.init(imageLiteralResourceName: "NSStatusAvailable")
-                vc.startTorOutlet.isEnabled = true
-                vc.startTorOutlet.title = "Stop"
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                
+                self.torRunningImage.alphaValue = 1
+                self.torRunningImage.image = NSImage.init(imageLiteralResourceName: "NSStatusAvailable")
+                self.startTorOutlet.isEnabled = true
+                self.startTorOutlet.title = "Stop"
             }
         } else {
-            DispatchQueue.main.async { [unowned vc = self] in
-                vc.torRunningImage.alphaValue = 1
-                vc.torRunningImage.image = NSImage.init(imageLiteralResourceName: "NSStatusUnavailable")
-                vc.startTorOutlet.isEnabled = true
-                vc.startTorOutlet.title = "Start"
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                
+                self.torRunningImage.alphaValue = 1
+                self.torRunningImage.image = NSImage.init(imageLiteralResourceName: "NSStatusUnavailable")
+                self.startTorOutlet.isEnabled = true
+                self.startTorOutlet.title = "Start"
             }
         }
     }
@@ -998,19 +925,23 @@ class ViewController: NSViewController, NSWindowDelegate {
                 rpcpassword = arr[1]
                 UserDefaults.standard.setValue(rpcpassword, forKey: "rpcpassword")
             }
-            if item.contains("testnet=1") || item.contains("testnet=0") || item.contains("regtest=1") || item.contains("regtest=0") {
+            if item.contains("testnet=1") || item.contains("testnet=0") || item.contains("regtest=1") || item.contains("regtest=0") || item.contains("signet=1") || item.contains("signet=0") {
                 simpleAlert(message: "Incompatible bitcoin.conf setting! Standup will not function properly.", info: "GordianServer allows you to run multiple networks simultaneously, we do this by specifying which chain we want to launch as a command line argument. Specifying a network in your bitcoin.conf is incompatible with this approach, please remove the line in your conf file which specifies a network to use GordianServer.", buttonLabel: "OK")
             }
         }
         if rpcpassword != "" && rpcuser != "" {
-            DispatchQueue.main.async { [unowned vc = self] in
-                vc.bitcoinConfigured = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                
+                self.bitcoinConfigured = true
             }
-            getPeerInfo()
+            checkBitcoindVersion()
         } else {
-            DispatchQueue.main.async { [unowned vc = self] in
-                vc.hideSpinner()
-                vc.bitcoinConfigured = false
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                
+                self.hideSpinner()
+                self.bitcoinConfigured = false
             }
         }
     }
@@ -1020,12 +951,63 @@ class ViewController: NSViewController, NSWindowDelegate {
             guard let self = self else { return }
             
             if let peerInfoArray = response as? NSArray {
-                DispatchQueue.main.async { [unowned vc = self] in
-                    vc.mainnetIncomingPeersLabel.stringValue = vc.peerInfo(peerInfoArray).in
-                    vc.mainnetOutgoingPeersLabel.stringValue = vc.peerInfo(peerInfoArray).out
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self else { return }
+                    
+                    self.mainnetIncomingPeersLabel.stringValue = self.peerInfo(peerInfoArray).in
+                    self.mainnetOutgoingPeersLabel.stringValue = self.peerInfo(peerInfoArray).out
+                    self.peerInfo = peerInfoArray.description
+                    self.peerDetailsButton.alphaValue = 1
                 }
             }
+            self.getUpTime()
+        }
+    }
+    
+    private func getUpTime() {
+        command(command: "uptime") { [weak self] response in
+            guard let self = self else { return }
             
+            if let uptime = response as? Double {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self else { return }
+                    
+                    self.uptimeOutlet.stringValue = uptime.uptime
+                }
+            }
+            self.getMempool()
+        }
+    }
+    
+    private func getMempool() {
+        command(command: "getmempoolinfo") { [weak self] response in
+            guard let self = self else { return }
+            
+            if let response = response as? [String:Any] {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self else { return }
+                    
+                    let mempoolInfo = MempoolInfo(response)
+                    self.mempoolOutlet.stringValue = "\(mempoolInfo.size) txs"
+                }
+            }
+            self.getMiningInfo()
+        }
+    }
+    
+    private func getMiningInfo() {
+        command(command: "getmininginfo") { [weak self] response in
+            guard let self = self else { return }
+            
+            if let response = response as? [String:Any] {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self else { return }
+                    
+                    let miningInfo = MiningInfo(response)
+                    self.hashrateOutlet.stringValue = "\(miningInfo.hashrate)"
+                }
+            }
+            self.checkForBitcoinUpdate()
             self.hideSpinner()
         }
     }
@@ -1052,44 +1034,40 @@ class ViewController: NSViewController, NSWindowDelegate {
             let arr = result.components(separatedBy: "Copyright (C)")
             currentVersion = (arr[0]).replacingOccurrences(of: "Bitcoin Core Daemon version ", with: "")
             currentVersion = currentVersion.replacingOccurrences(of: "Bitcoin Core version ", with: "")
-            DispatchQueue.main.async { [unowned vc = self] in
-                vc.verifyOutlet.isEnabled = true
-                vc.bitcoinCoreVersionOutlet.stringValue = self.currentVersion
-                vc.bitcoinInstalled = true
-                vc.verifyOutlet.isEnabled = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                
+                self.verifyOutlet.isEnabled = true
+                self.networkButton.isEnabled = true
+                self.bitcoinCoreVersionOutlet.stringValue = self.currentVersion
+                self.bitcoinInstalled = true
             }
-            
             isBitcoinOn()
         } else {
-            DispatchQueue.main.async { [unowned vc = self] in
-                vc.updateOutlet.title = "Install"
-                vc.updateOutlet.isEnabled = true
-                vc.bitcoinInstalled = false
-                vc.verifyOutlet.isEnabled = false
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                
+                self.updateOutlet.title = "Install"
+                self.updateOutlet.isEnabled = true
+                self.bitcoinInstalled = false
+                self.verifyOutlet.isEnabled = false
             }
-        }
-    }
-
-    func parseVerifyResult(result: String) {
-        let binaryName = env["BINARY_NAME"] ?? ""
-        if result.contains("\(binaryName): OK") {
-            simpleAlert(message: "Verified ✓", info: "The sha256 hashes for \(binaryName) and the SHA256SUMS file match.", buttonLabel: "OK")
-        } else if result.contains("No ~/.gordian/BitcoinCore directory") {
-            simpleAlert(message: "Error", info: "You are using a version of Bitcoin Core which was not installed by GordianServer, we are not yet able to verify Bitcoin Core instances not installed by GordianServer.", buttonLabel: "OK")
-        } else {
-            simpleAlert(message: "DANGER!!! Invalid signatures...", info: "Please delete the ~/.gordian folder and app and report an issue on the github, hashes do not match.", buttonLabel: "OK")
         }
     }
 
     //MARK: User Inteface
 
-    private func setTimer() {
-        timer?.invalidate()
-        timer = Timer.scheduledTimer(timeInterval: 15.0, target: self, selector: #selector(automaticRefresh), userInfo: nil, repeats: true)
+    func setTimer() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            
+            self.timer?.invalidate()
+            self.timer = Timer.scheduledTimer(timeInterval: 5.0, target: self, selector: #selector(self.automaticRefresh), userInfo: nil, repeats: true)
+        }
     }
 
     @objc func automaticRefresh() {
-        refreshAction()
+        checkSystem()
     }
 
     func setEnv() {
@@ -1101,20 +1079,24 @@ class ViewController: NSViewController, NSWindowDelegate {
     }
 
     func startSpinner(description: String) {
-        DispatchQueue.main.async { [unowned vc = self] in
-            vc.spinner.startAnimation(vc)
-            vc.taskDescription.stringValue = description
-            vc.spinner.alphaValue = 1
-            vc.taskDescription.alphaValue = 1
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            
+            self.spinner.startAnimation(self)
+            self.taskDescription.stringValue = description
+            self.spinner.alphaValue = 1
+            self.taskDescription.alphaValue = 1
         }
     }
 
     func hideSpinner() {
-        DispatchQueue.main.async { [unowned vc = self] in
-            vc.taskDescription.stringValue = ""
-            vc.spinner.stopAnimation(vc)
-            vc.spinner.alphaValue = 0
-            vc.taskDescription.alphaValue = 0
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            
+            self.taskDescription.stringValue = ""
+            self.spinner.stopAnimation(self)
+            self.spinner.alphaValue = 0
+            self.taskDescription.alphaValue = 0
         }
     }
 
@@ -1148,6 +1130,10 @@ class ViewController: NSViewController, NSWindowDelegate {
             self.torVersionOutlet.stringValue = ""
             self.startTorOutlet.isEnabled = false
             self.verifyOutlet.isEnabled = false
+            self.networkButton.isEnabled = false
+            self.startMainnetOutlet.isEnabled = false
+            self.torRemoveAuthOutlet.isEnabled = false
+            self.torAddAuthOutlet.isEnabled = false
             self.torRunningImage.alphaValue = 0
             self.bitcoinCoreWindow.backgroundColor = #colorLiteral(red: 0.1605761051, green: 0.1642630696, blue: 0.1891490221, alpha: 1)
             self.torWindow.backgroundColor = #colorLiteral(red: 0.1605761051, green: 0.1642630696, blue: 0.1891490221, alpha: 1)
@@ -1170,15 +1156,34 @@ class ViewController: NSViewController, NSWindowDelegate {
             self.mainnetOutgoingPeersLabel.stringValue = ""
         }
     }
+    
+    private func resetOutlets() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            
+            self.mainnetSyncedLabel.stringValue = ""
+            self.mainnetIncomingPeersLabel.stringValue = ""
+            self.mainnetOutgoingPeersLabel.stringValue = ""
+            self.hashrateOutlet.stringValue = ""
+            self.mempoolOutlet.stringValue = ""
+            self.uptimeOutlet.stringValue = ""
+            self.difficultyOutlet.stringValue = ""
+            self.blocksOutlet.stringValue = ""
+            self.pruningOutlet.stringValue = ""
+            self.sizeOutlet.stringValue = ""
+        }
+    }
 
     func showstandUpAlert(message: String, info: String) {
         DispatchQueue.main.async {
             actionAlert(message: message, info: info) { (response) in
                 if response {
-                    DispatchQueue.main.async { [unowned vc = self] in
-                        vc.standingUp = true
-                        vc.timer?.invalidate()
-                        vc.performSegue(withIdentifier: "goInstall", sender: vc)
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self = self else { return }
+                        
+                        self.standingUp = true
+                        self.timer?.invalidate()
+                        self.performSegue(withIdentifier: "goInstall", sender: self)
                     }
                 }
             }
@@ -1190,14 +1195,16 @@ class ViewController: NSViewController, NSWindowDelegate {
     }
 
     private func getLatestVersion(completion: @escaping ((success: Bool, errorMessage: String?)) -> Void) {
-        FetchLatestRelease.get { [unowned vc = self] (dict, error) in
+        FetchLatestRelease.get { [weak self] (dict, error) in
+            guard let self = self else { return }
+            
             if dict != nil {
                 if let version = dict!["version"] as? String,
                     let binaryName = dict!["macosBinary"] as? String,
                     let prefix = dict!["binaryPrefix"] as? String {
-                    vc.newestPrefix = prefix
-                    vc.newestVersion = version
-                    vc.newestBinaryName = binaryName
+                    self.newestPrefix = prefix
+                    self.newestVersion = version
+                    self.newestBinaryName = binaryName
                     completion((true, nil))
                 } else {
                     completion((false, error))
@@ -1220,6 +1227,11 @@ class ViewController: NSViewController, NSWindowDelegate {
 
     override func prepare(for segue: NSStoryboardSegue, sender: Any?) {
         switch segue.identifier {
+        case "showInfo":
+            if let vc = segue.destinationController as? Installer {
+                vc.peerInfo = self.peerInfo
+            }
+            
         case "segueToHelp":
             if let vc = segue.destinationController as? InstallerPrompt {
                 vc.text = infoMessage
@@ -1235,9 +1247,11 @@ class ViewController: NSViewController, NSWindowDelegate {
                 
                 vc.doneBlock = { response in
                     if response {
-                        DispatchQueue.main.async { [unowned vc = self] in
-                            vc.timer?.invalidate()
-                            vc.installXcodeCLTools()
+                        DispatchQueue.main.async { [weak self] in
+                            guard let self = self else { return }
+                            
+                            self.timer?.invalidate()
+                            self.installXcodeCLTools()
                         }
                     }
                 }
@@ -1249,20 +1263,15 @@ class ViewController: NSViewController, NSWindowDelegate {
                 vc.network = network
                 vc.rpcpassword = rpcpassword
                 vc.rpcuser = rpcuser
-                vc.torHostname = torHostname
-                //vc.httpPass = httpPass
             }
 
         case "goInstall":
             if let vc = segue.destinationController as? Installer {
-                //vc.installLightning = installingLightning
-                vc.updatingTor = self.updatingTor
-                vc.installingTor = self.installingTor
+                vc.isVerifying = self.isVerifying
                 vc.standingUp = standingUp
                 vc.upgrading = upgrading
                 vc.ignoreExistingBitcoin = ignoreExistingBitcoin
                 vc.strapping = strapping
-                //vc.lightningHostname = lightningP2pHostname
                 timer?.invalidate()
                 timer = nil
             }
@@ -1279,10 +1288,12 @@ class ViewController: NSViewController, NSWindowDelegate {
                 
                 vc.doneBlock = { response in
                     if response {
-                        DispatchQueue.main.async { [unowned vc = self] in
-                            vc.standingUp = true
-                            vc.timer?.invalidate()
-                            vc.performSegue(withIdentifier: "goInstall", sender: vc)
+                        DispatchQueue.main.async { [weak self] in
+                            guard let self = self else { return }
+                            
+                            self.standingUp = true
+                            self.timer?.invalidate()
+                            self.performSegue(withIdentifier: "goInstall", sender: vc)
                         }
                     }
                 }
@@ -1313,13 +1324,17 @@ extension NSView {
 extension ViewController: OnionManagerDelegate {
     
     func torConnProgress(_ progress: Int) {
-        DispatchQueue.main.async { [unowned vc = self] in
-            vc.taskDescription.stringValue = "Tor bootstrapping \(progress)% complete..."
-            vc.updateTorStatus(isOn: false)
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            
+            self.taskDescription.stringValue = "Tor bootstrapping \(progress)% complete..."
+            self.updateTorStatus(isOn: false)
         }
     }
     
     func torConnFinished() {
+        self.setTimer()
+        
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             
@@ -1327,6 +1342,8 @@ extension ViewController: OnionManagerDelegate {
             self.torVersionOutlet.stringValue = "v0.4.4.6"
             self.startTorOutlet.title = "Stop"
             self.startTorOutlet.isEnabled = true
+            self.torRemoveAuthOutlet.isEnabled = true
+            self.torAddAuthOutlet.isEnabled = true
             self.updateTorStatus(isOn: true)
             self.checkForGordian()
         }

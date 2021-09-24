@@ -11,24 +11,116 @@ import Cocoa
 @NSApplicationMain
 class AppDelegate: NSObject, NSApplicationDelegate {
     
-    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        let alert = NSAlert()
-        alert.messageText = "Quit Bitcoin Core?"
-        alert.informativeText = "Quitting the app does not stop Bitcoin Core automatically. Tor automatically quits so your node will not be remotely reachable.\n\nIf you opt to quit Bitcoin Core only the active network will be stopped, if you want to close all networks do that with the Stop button before quitting the app."
-        alert.addButton(withTitle: "Quit Bitcoin Core")
-        alert.addButton(withTitle: "Leave Running")
-        alert.alertStyle = .warning
-        let modalResponse = alert.runModal()
-        if (modalResponse == NSApplication.ModalResponse.alertFirstButtonReturn) {
-            self.quitBitcoin()
-        } else {
-            TorClient.sharedInstance.resign()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                NSApplication.shared.reply(toApplicationShouldTerminate: true)
+    public var isKilling = false
+    
+    @IBAction func gordianSeedToolClicked(_ sender: Any) {
+        do {
+            let filePaths = try FileManager.default.contentsOfDirectory(atPath: "/Applications")
+            var exists = false
+            
+            for (i, filePath) in filePaths.enumerated() {
+                if filePath == "Gordian Seed Tool.app" {
+                    exists = true
+                }
+                if i + 1 == filePaths.count {
+                    if exists {
+                        runScript(script: .openFile, env: ["FILE":"/Applications/Gordian Seed Tool.app"], args: []) { _ in }
+                    } else {
+                        DispatchQueue.main.async {
+                            guard let url = URL(string: "https://apps.apple.com/us/app/gordian-seed-tool/id1545088229") else { return }
+                            NSWorkspace.shared.open(url)
+                        }
+                    }
+                }
             }
+        } catch {
+            simpleAlert(message: "There was an issue accessing your installed applications.", info: "\(error.localizedDescription)\n\nPlease let us know about this bug.", buttonLabel: "OK")
         }
-        
-        return .terminateLater
+    }
+    
+    
+    @IBAction func gordianQRToolClicked(_ sender: Any) {
+        do {
+            let filePaths = try FileManager.default.contentsOfDirectory(atPath: "/Applications")
+            var exists = false
+            
+            for (i, filePath) in filePaths.enumerated() {
+                if filePath == "Gordian QR Tool.app" {
+                    exists = true
+                }
+                if i + 1 == filePaths.count {
+                    if exists {
+                        runScript(script: .openFile, env: ["FILE":"/Applications/Gordian QR Tool.app"], args: []) { _ in }
+                    } else {
+                        DispatchQueue.main.async {
+                            guard let url = URL(string: "https://apps.apple.com/us/app/gordian-qr-tool/id1506851070") else { return }
+                            NSWorkspace.shared.open(url)
+                        }
+                    }
+                }
+            }
+        } catch {
+            simpleAlert(message: "There was an issue accessing your installed applications.", info: "\(error.localizedDescription)\n\nPlease let us know about this bug.", buttonLabel: "OK")
+        }
+    }
+    
+    @IBAction func fullyNodedClicked(_ sender: Any) {
+        do {
+            let filePaths = try FileManager.default.contentsOfDirectory(atPath: "/Applications")
+            var exists = false
+            
+            for (i, filePath) in filePaths.enumerated() {
+                print("file path: \(filePath)")
+                if filePath == "FullyNoded.app" {
+                    exists = true
+                }
+                if i + 1 == filePaths.count {
+                    if exists {
+                        runScript(script: .openFile, env: ["FILE":"/Applications/FullyNoded.app"], args: []) { _ in }
+                    } else {
+                        DispatchQueue.main.async {
+                            guard let url = URL(string: "https://apps.apple.com/us/app/fully-noded-desktop/id1530816100?mt=12") else { return }
+                            NSWorkspace.shared.open(url)
+                        }
+                    }
+                }
+            }
+        } catch {
+            simpleAlert(message: "There was an issue accessing your installed applications.", info: "\(error.localizedDescription)\n\nPlease let us know about this bug.", buttonLabel: "OK")
+        }
+    }
+    
+    @IBAction func newWindowClicked(_ sender: Any) {
+        let storyboard = NSStoryboard(name: "Main", bundle: nil)
+        let settingsController:NSWindowController = storyboard.instantiateController(withIdentifier: "MainWindow") as! NSWindowController
+        settingsController.showWindow(settingsController)
+    }
+    
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if !isKilling {
+            let alert = NSAlert()
+            alert.messageText = "Quit Bitcoin Core?"
+            alert.informativeText = "Quitting the app does not stop Bitcoin Core automatically. Tor automatically quits so your node will not be remotely reachable.\n\nIf you opt to quit Bitcoin Core only the active network will be stopped, if you want to close all networks do that with the Stop button before quitting the app."
+            alert.addButton(withTitle: "Quit Bitcoin Core")
+            alert.addButton(withTitle: "Leave Running")
+            alert.addButton(withTitle: "Cancel")
+            alert.alertStyle = .warning
+            let modalResponse = alert.runModal()
+            if (modalResponse == NSApplication.ModalResponse.alertFirstButtonReturn) {
+                self.quitBitcoin()
+                return .terminateLater
+            } else if modalResponse == NSApplication.ModalResponse.alertSecondButtonReturn {
+                TorClient.sharedInstance.resign()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                    NSApplication.shared.reply(toApplicationShouldTerminate: true)
+                }
+                return .terminateLater
+            } else {
+                return .terminateCancel
+            }
+        } else {
+            return .terminateNow
+        }
     }
     
     func quitBitcoin() {
@@ -83,15 +175,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     @IBAction func torHostClicked(_ sender: Any) {
-        runScript(script: .openFile, env: ["FILE":"\(TorClient.sharedInstance.torPath())/host/bitcoin/rpc/\(UserDefaults.standard.string(forKey: "chain")!)/hostname"], args: []) { _ in }
+        runScript(script: .openFile, env: ["FILE":"\(TorClient.sharedInstance.hiddenServicePath)/bitcoin/rpc/\(UserDefaults.standard.string(forKey: "chain")!)/hostname"], args: []) { _ in }
     }
     
     @IBAction func torAuthenticationClicked(_ sender: Any) {
-        runScript(script: .openFile, env: ["FILE":"\(TorClient.sharedInstance.torPath())/host/bitcoin/rpc/\(UserDefaults.standard.string(forKey: "chain")!)/authorized_clients/"], args: []) { _ in }
+        runScript(script: .openFile, env: ["FILE":"\(TorClient.sharedInstance.hiddenServicePath)/bitcoin/rpc/\(UserDefaults.standard.string(forKey: "chain")!)/authorized_clients/"], args: []) { _ in }
     }
     
     @IBAction func hiddenServiceDirClicked(_ sender: Any) {
-        runScript(script: .openFile, env: ["FILE":"\(TorClient.sharedInstance.torPath())/host/bitcoin/rpc/\(UserDefaults.standard.string(forKey: "chain")!)"], args: []) { _ in }
+        runScript(script: .openFile, env: ["FILE":"\(TorClient.sharedInstance.hiddenServicePath)/bitcoin/rpc/\(UserDefaults.standard.string(forKey: "chain")!)"], args: []) { _ in }
     }
     
     @IBAction func torCnfigClicked(_ sender: Any) {
@@ -99,7 +191,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     @IBAction func torLogClicked(_ sender: Any) {
-        runScript(script: .openFile, env: ["FILE":"\(TorClient.sharedInstance.torPath())/debug.log"], args: []) { _ in }
+        runScript(script: .openFile, env: ["FILE":"/Users/\(NSUserName())/.gordian/tor/notices.log"], args: []) { _ in }
     }
     
     @IBAction func bitcoinCoreConfClicked(_ sender: Any) {
@@ -144,6 +236,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         vc.showWindow(self)
     }
     
+    func applicationDidResignActive(_ notification: Notification) {
+        let storyboard = NSStoryboard(name: "Main", bundle: nil)
+        let mainConsole = storyboard.instantiateController(withIdentifier: "Console") as! ViewController
+        mainConsole.timer?.invalidate()
+    }
+    
+    func applicationDidBecomeActive(_ notification: Notification) {
+        let storyboard = NSStoryboard(name: "Main", bundle: nil)
+        let mainConsole = storyboard.instantiateController(withIdentifier: "Console") as! ViewController
+        mainConsole.setTimer()
+    }
     
     func applicationDidFinishLaunching(_ aNotification: Notification) {
         // Insert code here to initialize your application

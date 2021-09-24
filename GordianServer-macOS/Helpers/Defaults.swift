@@ -14,7 +14,6 @@ class Defaults {
         let path = URL(fileURLWithPath: "/Users/\(NSUserName())/Library/Application Support/Bitcoin/bitcoin.conf")
         
         guard let bitcoinConf = try? String(contentsOf: path, encoding: .utf8) else {
-            print("can not get bitcoin.conf")
             completion((nil, false))
             return
         }
@@ -26,9 +25,9 @@ class Defaults {
     let ud = UserDefaults.standard
     
     func setDefaults(completion: @escaping () -> Void) {
-        if ud.object(forKey: "dataDir") == nil {
-            ud.set("/Users/\(NSUserName())/Library/Application\\ Support/Bitcoin", forKey: "dataDir")
-        }
+//        if ud.object(forKey: "dataDir") == nil {
+//            ud.set("/Users/\(NSUserName())/Library/Application\\ Support/Bitcoin", forKey: "dataDir")
+//        }
         
         func setLocals() {
             if ud.object(forKey: "prune") == nil {
@@ -46,7 +45,8 @@ class Defaults {
         getBitcoinConf { [unowned vc = self] (conf, error) in
             var proxyOn = false
             var listenOn = false
-            var bindOn = false
+            var onlyNetOnion = false
+            var discover = false
             if !error && conf != nil {
                 if conf!.count > 0 {
                     for setting in conf! {
@@ -55,19 +55,25 @@ class Defaults {
                             let k = arr[0]
                             let existingValue = arr[1]
                             switch k {
+                            case "blocksdir":
+                                self.ud.setValue(existingValue, forKey: "blocksDir")
+                                
+                            case "discover":
+                                if existingValue == "0" {
+                                    discover = false
+                                }
+                            case "onlynet":
+                                if existingValue == "onion" {
+                                    onlyNetOnion = true
+                                }
                             case "proxy":
-                                if existingValue == "127.0.0.1:9050" {
+                                if existingValue == "127.0.0.1:19150" {
                                     proxyOn = true
                                 }
                                 
                             case "listen":
                                 if Int(existingValue) == 1 {
                                     listenOn = true
-                                }
-                                
-                            case "bindaddress":
-                                if existingValue == "127.0.0.1" {
-                                    bindOn = true
                                 }
                                 
                             case "testnet", "regtest":
@@ -97,7 +103,7 @@ class Defaults {
                         }
                     }
                     
-                    if bindOn && proxyOn && listenOn {
+                    if proxyOn && listenOn && onlyNetOnion && !discover {
                         vc.ud.set(1, forKey: "isPrivate")
                     } else {
                         vc.ud.set(0, forKey: "isPrivate")
@@ -113,6 +119,14 @@ class Defaults {
         if ud.object(forKey: "nodeLabel") == nil {
             ud.set("StandUp Node", forKey: "nodeLabel")
         }
+        
+        if ud.object(forKey: "autoStart") == nil {
+            ud.setValue(true, forKey: "autoStart")
+        }
+    }
+    
+    func autoStart() -> Bool {
+        return ud.object(forKey: "autoStart") as? Bool ?? true
     }
     
     func dataDir() -> String {
